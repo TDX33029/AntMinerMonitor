@@ -1,0 +1,135 @@
+' ==============================================================================
+' SolidWorks VBA 自动化建模宏：台达 12025 服务器暴力散热风扇超薄低阻防护罩
+' 适配版本：SOLIDWORKS 2018 ~ 2026
+' 单位：国际标准米制 (内部以米为单位，实际输出尺寸严格为 120mm x 120mm x 2.0mm)
+' 
+' 使用方法：
+' 1. 打开 SolidWorks，新建一个零件（或直接打开已有空零件）
+' 2. 菜单栏点击【工具】 -> 【宏】 -> 【新建】
+' 3. 删除编辑器中原有代码，将本文件全部代码复制粘贴进去
+' 4. 按键盘 F5 或点击顶部的绿色播放按钮运行，几秒钟内即可全自动生成模型！
+' ==============================================================================
+
+Option Explicit
+
+Dim swApp As Object
+Dim Part As Object
+Dim boolstatus As Boolean
+Dim longstatus As Long, longwarnings As Long
+
+Sub main()
+    Set swApp = Application.SldWorks
+    
+    ' 1. 获取当前激活的文档
+    Set Part = swApp.ActiveDoc
+    If Part Is Nothing Then
+        ' 如果没有打开任何零件，则创建新零件
+        Dim templatePath As String
+        templatePath = swApp.GetUserPreferenceStringValue(1) ' 默认零件模板
+        If templatePath = "" Then
+            Set Part = swApp.NewPart()
+        Else
+            Set Part = swApp.NewDocument(templatePath, 0, 0, 0)
+        End If
+    End If
+    
+    If Part Is Nothing Then
+        MsgBox "未能获取或新建零件文档，请先在 SolidWorks 中手动新建一个空白零件！", vbExclamation, "提示"
+        Exit Sub
+    End If
+    
+    ' 2. 选中上视基准面 (兼容中英文 SolidWorks)
+    boolstatus = Part.Extension.SelectByID2("上视基准面", "PLANE", 0, 0, 0, False, 0, Nothing, 0)
+    If Not boolstatus Then
+        boolstatus = Part.Extension.SelectByID2("Top Plane", "PLANE", 0, 0, 0, False, 0, Nothing, 0)
+    End If
+    If Not boolstatus Then
+        boolstatus = Part.Extension.SelectByID2("前视基准面", "PLANE", 0, 0, 0, False, 0, Nothing, 0)
+    End If
+    If Not boolstatus Then
+        boolstatus = Part.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, False, 0, Nothing, 0)
+    End If
+    
+    ' 3. 新建草图 1：绘制 120x120 外框、105x105 四孔与 116mm 进风大孔
+    Part.SketchManager.InsertSketch True
+    Part.ClearSelection2 True
+    
+    ' 120mm x 120mm 中心矩形 (半宽 0.06m)
+    Part.SketchManager.CreateCenterRectangle 0, 0, 0, 0.06, 0.06, 0
+    
+    ' 四角安装螺丝孔：中心距 105mm (X=±0.0525, Y=±0.0525), 孔径 4.5mm (半径 0.00225m)
+    Part.SketchManager.CreateCircleByRadius 0.0525, 0.0525, 0, 0.00225
+    Part.SketchManager.CreateCircleByRadius -0.0525, 0.0525, 0, 0.00225
+    Part.SketchManager.CreateCircleByRadius -0.0525, -0.0525, 0, 0.00225
+    Part.SketchManager.CreateCircleByRadius 0.0525, -0.0525, 0, 0.00225
+    
+    ' 进风口大圆：直径 116mm (半径 0.058m)
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.058
+    
+    ' 退出草图并拉伸 2.0mm (0.002m)
+    Part.FeatureManager.FeatureExtrusion3 True, False, False, 0, 0, 0.002, 0.002, False, False, False, False, 0, 0, False, False, False, False, True, True, True, 0, 0, False
+    Part.ClearSelection2 True
+    
+    ' 4. 在顶面新建草图 2：绘制中心轮毂 (直径 46mm = 半径 0.023m)
+    Part.Extension.SelectByID2("", "FACE", 0.055, 0.055, 0.002, False, 0, Nothing, 0)
+    Part.SketchManager.InsertSketch True
+    Part.ClearSelection2 True
+    
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.023
+    
+    ' 拉伸 2.0mm 并合并结果
+    Part.FeatureManager.FeatureExtrusion3 True, False, False, 0, 0, 0.002, 0.002, False, False, False, False, 0, 0, False, False, False, False, True, True, True, 0, 0, False
+    Part.ClearSelection2 True
+    
+    ' 5. 新建草图 3：绘制 4 道同心圆环 (环宽 1.8mm)
+    Part.Extension.SelectByID2("", "FACE", 0.055, 0.055, 0.002, False, 0, Nothing, 0)
+    Part.SketchManager.InsertSketch True
+    Part.ClearSelection2 True
+    
+    ' 环 1: R=29.1 ~ 30.9 mm
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.0309
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.0291
+    ' 环 2: R=36.6 ~ 38.4 mm
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.0384
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.0366
+    ' 环 3: R=44.1 ~ 45.9 mm
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.0459
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.0441
+    ' 环 4: R=51.6 ~ 53.4 mm
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.0534
+    Part.SketchManager.CreateCircleByRadius 0, 0, 0, 0.0516
+    
+    ' 拉伸 2.0mm 并合并
+    Part.FeatureManager.FeatureExtrusion3 True, False, False, 0, 0, 0.002, 0.002, False, False, False, False, 0, 0, False, False, False, False, True, True, True, 0, 0, False
+    Part.ClearSelection2 True
+    
+    ' 6. 新建草图 4：绘制放射加强筋
+    Part.Extension.SelectByID2("", "FACE", 0.055, 0.055, 0.002, False, 0, Nothing, 0)
+    Part.SketchManager.InsertSketch True
+    Part.ClearSelection2 True
+    
+    ' 十字副筋：横向与纵向矩形 (宽 1.8mm = 半宽 0.0009m)
+    Part.SketchManager.CreateCenterRectangle 0, 0, 0, 0.058, 0.0009, 0
+    Part.SketchManager.CreateCenterRectangle 0, 0, 0, 0.0009, 0.058, 0
+    
+    ' 对角主筋 (宽 2.2mm = 半宽 0.0011m)
+    ' 45度方向
+    Part.SketchManager.CreateLine -0.04, -0.04 + 0.00078, 0, 0.04, 0.04 + 0.00078, 0
+    Part.SketchManager.CreateLine 0.04, 0.04 + 0.00078, 0, 0.04 + 0.00078, 0.04, 0
+    Part.SketchManager.CreateLine 0.04 + 0.00078, 0.04, 0, -0.04 + 0.00078, -0.04, 0
+    Part.SketchManager.CreateLine -0.04 + 0.00078, -0.04, 0, -0.04, -0.04 + 0.00078, 0
+    
+    ' 135度方向
+    Part.SketchManager.CreateLine -0.04, 0.04 - 0.00078, 0, 0.04, -0.04 - 0.00078, 0
+    Part.SketchManager.CreateLine 0.04, -0.04 - 0.00078, 0, 0.04 + 0.00078, -0.04, 0
+    Part.SketchManager.CreateLine 0.04 + 0.00078, -0.04, 0, -0.04 + 0.00078, 0.04, 0
+    Part.SketchManager.CreateLine -0.04 + 0.00078, 0.04, 0, -0.04, 0.04 - 0.00078, 0
+    
+    ' 拉伸 2.0mm 并合并
+    Part.FeatureManager.FeatureExtrusion3 True, False, False, 0, 0, 0.002, 0.002, False, False, False, False, 0, 0, False, False, False, False, True, True, True, 0, 0, False
+    Part.ClearSelection2 True
+    
+    ' 7. 视图居中缩放
+    Part.ViewZoomtofit2
+    MsgBox "台达 12025 超薄低风阻防护罩建模完成！", vbInformation, "成功"
+End Sub

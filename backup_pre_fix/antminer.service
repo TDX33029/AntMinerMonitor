@@ -1,0 +1,23 @@
+[Unit]
+Description=AntMinerTab - Headless S19 Hydro & Smart Plug Guardian Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+# Change WorkingDirectory to your deployed directory on Ubuntu, e.g., /opt/AntMiner
+WorkingDirectory=/opt/AntMiner
+ExecStart=/usr/bin/python3 /opt/AntMiner/antminer_monitor.py --watch --interval 1.0
+Restart=always
+RestartSec=5s
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+# Resource limits
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
