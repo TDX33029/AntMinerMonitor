@@ -49,8 +49,20 @@
 # 1. 启动桌面图形监控窗口 (PyQt5)
 python antminer_gui.py
 
-# 2. 启动 Web 监控服务 (端口 20000，支持 Basic Auth 认证访问)
+# 2. 启动 Web 监控服务 (端口 20000，开箱即用默认开启密码保护)
 python antminer_web.py
-# 默认登录账号: admin，默认密码: antminer
-# 也可自定义：python antminer_web.py --user admin --password yourpassword
+# 默认直接运行即可，自动读取当前目录下的 config.json 配置文件：
+# - 登录网页密码：默认为 antminer（无需输入用户名）
+# - 通电操作密码：默认为 dl.general
 ```
+
+### 配置文件 `config.json` 说明
+Web 服务启动时会自动加载并常驻读取同目录下的 `config.json`：
+```json
+{
+  "login_password": "antminer",
+  "power_password": "dl.general"
+}
+```
+* `login_password`: Web 页面及 API 访问登录密码。在浏览器登录弹框中，**用户名无需填写（可留空或随意输入）**，只需填入该密码即可进入。
+* `power_password`: 网页端点击开启插座通电时的授权密码。

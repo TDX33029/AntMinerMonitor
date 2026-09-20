@@ -84,27 +84,25 @@ python3 antminer_monitor.py --watch --wrn-temp 74.0 --stop-temp 77.0
 适合希望在局域网内任意手机、电脑，或通过 **Tailscale 远程网络** 随时随地使用浏览器查看：
 
 ```bash
-# 默认启动（开启 Basic Auth，默认账号: admin，密码: antminer）
+# 默认启动（开箱即用，默认开启密码保护，自动读取同目录下的 config.json）
 python3 antminer_web.py
-
-# 自定义账号密码与端口启动
-python3 antminer_web.py --port 20000 --user myadmin --password mypassword
-
-# 如需在纯内网环境中免密访问（禁用认证）
-python3 antminer_web.py --no-auth
 ```
 
+* **配置文件 `config.json`**：
+  服务端在当前目录下维护 `config.json`，集中管理两层密码：
+  ```json
+  {
+    "login_password": "antminer",
+    "power_password": "dl.general"
+  }
+  ```
 * **访问地址**：
   * **本机访问**：[http://127.0.0.1:20000](http://127.0.0.1:20000)
   * **Tailscale 远程访问**：`http://<您的Tailscale-IP>:20000`（服务已绑定 `0.0.0.0:20000`，Tailscale 虚拟网络内的所有设备可直接秒开）
   * **局域网设备访问**：`http://<Ubuntu局域网IP>:20000`
 * **安全鉴权**：
-  * **Web 登录认证 (HTTP Basic Auth)**：默认已开启。首次通过浏览器访问任何页面或 API 时将弹出登录框，默认账号：`admin`，默认密码：`antminer`。可通过命令行参数 `--user` / `--password` 或环境变量 `ANTMINER_USER` / `ANTMINER_PASSWORD` 自定义。
-* **特性**：
-  * 纯方形极简暗黑工业风格（与桌面 GUI 100% 一致）。
-  * 原生 HTML5 Canvas 高清渲染 1 小时滑动窗口折线图，支持平滑自适应 Y 轴与十字花右上角实时测温。
-  * 支持自定义刷新时间（0.5s~60s）、WRN/STOP 双阈值超温熔断与 Telegram 自动告警。
-  * 网页端启动插座电源同样受到密码（`dl.general`）保护。
+  * **Web 登录认证**：默认强制开启。浏览器访问时弹出认证弹窗，**无需填写用户名（可留空或随意输入）**，只需输入 `config.json` 中配置的 `login_password`（默认 `antminer`）即可进入。
+  * **通电操作保护**：网页端点击插座启动通电（ON）时，弹出密码输入框，需要输入 `config.json` 中配置的 `power_password`（默认 `dl.general`），校验通过后方可合闸送电。急停断电（OFF）无需密码。
 
 ---
 

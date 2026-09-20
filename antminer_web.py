@@ -1539,16 +1539,31 @@ HTML_PAGE = """<!DOCTYPE html>
   });
 
   document.getElementById("pwdConfirmBtn").addEventListener("click", async () => {
-    if (pwdInput.value === "dl.general") {
-      modal.style.display = "none";
-      await fetch("/api/switch", {
+    const pwd = pwdInput.value;
+    try {
+      const res = await fetch("/api/switch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state: true, password: pwdInput.value })
+        body: JSON.stringify({ state: true, password: pwd })
       });
-    } else {
+      const data = await res.json();
+      if (res.ok && data.ok) {
+        modal.style.display = "none";
+      } else {
+        pwdErr.style.display = "block";
+        pwdInput.select();
+      }
+    } catch (e) {
       pwdErr.style.display = "block";
       pwdInput.select();
+    }
+  });
+
+  pwdInput.addEventListener("keydown", e => {
+    if (e.key === "Enter") {
+      document.getElementById("pwdConfirmBtn").click();
+    } else if (e.key === "Escape") {
+      modal.style.display = "none";
     }
   });
 
@@ -1565,14 +1580,44 @@ HTML_PAGE = """<!DOCTYPE html>
 """
 
 
+CONFIG_DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+
+
+def load_config(config_path: str = CONFIG_DEFAULT_PATH) -> Dict[str, str]:
+    """Load or create config.json for login_password and power_password."""
+    default_config = {
+        "login_password": "antminer",
+        "power_password": "dl.general"
+    }
+    if not os.path.exists(config_path):
+        try:
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(default_config, f, indent=2, ensure_ascii=False)
+                f.write("\n")
+        except Exception as e:
+            sys.stderr.write(f"[Config Warning] Failed to create {config_path}: {e}\n")
+        return default_config
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+            return {
+                "login_password": str(cfg.get("login_password", default_config["login_password"])),
+                "power_password": str(cfg.get("power_password", default_config["power_password"])),
+            }
+    except Exception as e:
+        sys.stderr.write(f"[Config Warning] Failed to parse {config_path}: {e}. Using defaults.\n")
+        return default_config
+
+
 class AntMinerWebHandler(BaseHTTPRequestHandler):
-    """Threading HTTP Handler serving Single Page App and REST APIs with HTTP Basic Auth."""
+    """Threading HTTP Handler serving Single Page App and REST APIs with Password-only Auth."""
 
     def log_message(self, format, *args):
         pass
 
     def check_basic_auth(self) -> bool:
-        """Verify HTTP Basic Authentication header."""
+        """Verify HTTP Authentication: Password only, username is not required."""
         if not getattr(self.server, "auth_enabled", True):
             return True
 
@@ -1583,14 +1628,14 @@ class AntMinerWebHandler(BaseHTTPRequestHandler):
 
         try:
             encoded_creds = auth_header[6:].strip()
-            decoded = base64.b64decode(encoded_creds).decode("utf-8")
-            if ":" not in decoded:
-                self.send_auth_challenge()
-                return False
-            user, password = decoded.split(":", 1)
-            expected_user = getattr(self.server, "auth_user", "admin")
-            expected_pass = getattr(self.server, "auth_password", "antminer")
-            if hmac.compare_digest(user, expected_user) and hmac.compare_digest(password, expected_pass):
+            decoded = base64.b64decode(encoded_creds).decode("utf-8", errors="ignore")
+            if ":" in decoded:
+                _, password = decoded.split(":", 1)
+            else:
+                password = decoded
+
+            expected_pass = getattr(self.server, "login_password", "antminer")
+            if hmac.compare_digest(password, expected_pass):
                 return True
         except Exception:
             pass
@@ -1601,12 +1646,12 @@ class AntMinerWebHandler(BaseHTTPRequestHandler):
     def send_auth_challenge(self):
         """Send 401 Unauthorized response with WWW-Authenticate header."""
         self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="AntMinerTab Dashboard", charset="UTF-8"')
+        self.send_header("WWW-Authenticate", 'Basic realm="AntMinerTab Dashboard (Password Only)", charset="UTF-8"')
         if self.path.startswith("/api/"):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
-            self.wfile.write(b'{"ok":false,"error":"Unauthorized","msg":"HTTP Basic Auth required"}')
+            self.wfile.write(b'{"ok":false,"error":"Unauthorized","msg":"Password authentication required"}')
         else:
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -1622,7 +1667,8 @@ class AntMinerWebHandler(BaseHTTPRequestHandler):
                 '</style></head>'
                 '<body><div class="box">'
                 '<h2>[ 401 UNAUTHORIZED ]</h2>'
-                '<p>Authentication Required: Please log in with valid credentials.<br>'
+                '<p>Authentication Required: Please enter your login password.<br>'
+                '(Username is not required / ignored)<br>'
                 'AntMinerTab Industrial Monitoring Console</p>'
                 '</div></body></html>'
             )
@@ -1676,13 +1722,15 @@ class AntMinerWebHandler(BaseHTTPRequestHandler):
 
         if parsed.path == "/api/switch":
             state = req_data.get("state", False)
-            pwd = req_data.get("password", "")
-            if state and pwd != "dl.general":
-                self.send_response(403)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b'{"ok":false,"msg":"Invalid password"}')
-                return
+            pwd = str(req_data.get("password", ""))
+            if state:
+                expected_power_pwd = str(getattr(self.server, "power_password", "dl.general"))
+                if not hmac.compare_digest(pwd, expected_power_pwd):
+                    self.send_response(403)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(b'{"ok":false,"msg":"Invalid password"}')
+                    return
 
             res = self.server.state_manager.set_plug_switch(bool(state))
             self.send_response(200)
@@ -1724,12 +1772,14 @@ def main():
     parser = argparse.ArgumentParser(description="AntMinerTab Web Server Edition (Port 20000)")
     parser.add_argument("--host", default=os.getenv("ANTMINER_HOST", "0.0.0.0"), help="Host address to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=int(os.getenv("ANTMINER_PORT", "20000")), help="Port to listen on (default: 20000)")
-    parser.add_argument("--user", default=os.getenv("ANTMINER_USER", "admin"), help="Basic Auth username (default: admin)")
-    parser.add_argument("--password", default=os.getenv("ANTMINER_PASSWORD", os.getenv("ANTMINER_PASS", "antminer")), help="Basic Auth password (default: antminer)")
-    parser.add_argument("--no-auth", action="store_true", default=os.getenv("ANTMINER_NO_AUTH", "").lower() in ("1", "true", "yes"), help="Disable HTTP Basic Auth")
+    parser.add_argument("--config", default=CONFIG_DEFAULT_PATH, help=f"Path to configuration file (default: {CONFIG_DEFAULT_PATH})")
 
     args = parser.parse_args()
-    auth_enabled = not args.no_auth
+
+    # Load configuration from local config file
+    config = load_config(args.config)
+    login_password = config["login_password"]
+    power_password = config["power_password"]
 
     print("=" * 72)
     print(" 🚀 AntMinerTab Web Server Starting...")
@@ -1737,12 +1787,9 @@ def main():
     print(f" Target Plug:  10.8.1.110 (Mijia Smart Plug 3)")
     print(f" Telegram Bot: @s332854BOT (7775553661)")
     print("=" * 72)
-    if auth_enabled:
-        print(f" Web Security: Basic Auth ENABLED")
-        print(f" Username:     {args.user}")
-        print(f" Password:     {args.password}")
-    else:
-        print(f" Web Security: Basic Auth DISABLED (--no-auth active)")
+    print(f" Config File:   {os.path.basename(args.config)} (Loaded)")
+    print(f" Web Security:  Password Protection ENABLED (Default)")
+    print(f" Auth Mode:     Password Only (Username is ignored / not required)")
     print("=" * 72)
     print(f" Local Access:     http://127.0.0.1:{args.port}")
     print(f" Tailscale Access: http://<tailscale-ip>:{args.port}")
@@ -1753,16 +1800,14 @@ def main():
 
     server = ThreadingHTTPServer((args.host, args.port), AntMinerWebHandler)
     server.state_manager = state_mgr
-    server.auth_enabled = auth_enabled
-    server.auth_user = args.user
-    server.auth_password = args.password
+    server.auth_enabled = True
+    server.login_password = login_password
+    server.power_password = power_password
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nStopping AntMinerTab Web Server...")
-        server.server_close()
-        sys.exit(0)
         server.server_close()
         sys.exit(0)
 
