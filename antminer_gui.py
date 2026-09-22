@@ -543,8 +543,13 @@ class DataWorker(QThread):
                         total_diffa += float(p.get("diffa", 0.0))
                         total_diffr += float(p.get("diffr", 0.0))
 
-                    total_diff = total_diffa + total_diffr
-                    reject_ratio = (total_diffr / total_diff * 100.0) if total_diff > 0 else 0.0
+                    total_shares = total_accepted + total_rejected
+                    if total_shares > 0:
+                        reject_ratio = min(100.0, max(0.0, (total_rejected / total_shares) * 100.0))
+                    elif (total_diffa + total_diffr) > 0:
+                        reject_ratio = min(100.0, max(0.0, (total_diffr / (total_diffa + total_diffr)) * 100.0))
+                    else:
+                        reject_ratio = 0.0
 
                     miner_fetch_success = True
                     self.consecutive_miner_failures = 0
@@ -847,6 +852,11 @@ class MainWindow(QMainWindow):
         # Overheat Protection State
         self.overheat_wrn_seconds = 0
         self.cutoff_triggered = False
+
+        # High Reject Ratio Alarm State
+        self.high_reject_alerted = False
+        self.last_reject_alert_time = 0.0
+        self.reject_alert_cooldown = 300.0  # Cooldown 5 minutes between alerts
 
         # User Interaction & Right-Align Timer
         self.last_user_interaction_time = 0.0
@@ -1409,6 +1419,39 @@ class MainWindow(QMainWindow):
                 # Temperature safe: reset warning countdown only when miner is verified online
                 self.overheat_wrn_seconds = 0
                 self.cutoff_alert_label.hide()
+
+        # High Reject Ratio Telegram Alert (>10%) with Cooldown & Auto-Recovery
+        miner_online = data.get("miner_online", False)
+        total_shares = accepted + rejected
+        if miner_online and total_shares >= 10 and reject_ratio > 10.0:
+            if (not self.high_reject_alerted) or (now - self.last_reject_alert_time >= self.reject_alert_cooldown):
+                self.high_reject_alerted = True
+                self.last_reject_alert_time = now
+                msg = (
+                    f"⚠️ <b>[AntMinerTab 矿池高拒绝率告警]</b>\n\n"
+                    f"<b>设备</b>: Antminer S19 Hydro (10.8.1.86)\n"
+                    f"<b>当前拒绝率</b>: <b>{reject_ratio:.2f}%</b> (告警阈值: 10.00%)\n"
+                    f"<b>有效份额 (Accepted)</b>: {accepted:,}\n"
+                    f"<b>拒绝份额 (Rejected)</b>: {rejected:,}\n"
+                    f"<b>总份额数 (Total)</b>: {total_shares:,}\n"
+                    f"<b>实时算力</b>: {hashrate:,.1f} GH/s\n"
+                    f"<b>状态分析</b>: 矿机提交份额被矿池拒绝比例已超 10%，请检查矿池网络延迟与算力板状态！\n"
+                    f"<b>时间</b>: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                send_telegram_async(msg)
+        elif miner_online and self.high_reject_alerted and reject_ratio <= 5.0 and total_shares >= 15:
+            self.high_reject_alerted = False
+            recovery_msg = (
+                f"✅ <b>[AntMinerTab 矿池拒绝率恢复正常]</b>\n\n"
+                f"<b>设备</b>: Antminer S19 Hydro (10.8.1.86)\n"
+                f"<b>当前拒绝率</b>: <b>{reject_ratio:.2f}%</b>\n"
+                f"<b>有效份额 (Accepted)</b>: {accepted:,}\n"
+                f"<b>拒绝份额 (Rejected)</b>: {rejected:,}\n"
+                f"<b>实时算力</b>: {hashrate:,.1f} GH/s\n"
+                f"<b>状态</b>: 矿机提交份额已稳定接收，拒绝率已恢复至正常水平。\n"
+                f"<b>时间</b>: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            send_telegram_async(recovery_msg)
 
         # 4. Update 1-Hour Rolling Buffers
         if tin > 0 or tout > 0 or chip_max > 0:

@@ -235,6 +235,11 @@ class MonitorStateManager:
         self.overheat_wrn_seconds = 0
         self.cutoff_triggered = False
 
+        # Reject Ratio Alarm State
+        self.high_reject_alerted = False
+        self.last_reject_alert_time = 0.0
+        self.reject_alert_cooldown = 300.0  # Cooldown 5 minutes between alerts
+
         # Latest Snapshot
         self.latest_data: Dict[str, Any] = {
             "timestamp": "--:--:--",
@@ -387,8 +392,13 @@ class MonitorStateManager:
                         total_diffa += float(p.get("diffa", 0.0))
                         total_diffr += float(p.get("diffr", 0.0))
 
-                    total_diff = total_diffa + total_diffr
-                    reject_ratio = (total_diffr / total_diff * 100.0) if total_diff > 0 else 0.0
+                    total_shares = total_accepted + total_rejected
+                    if total_shares > 0:
+                        reject_ratio = min(100.0, max(0.0, (total_rejected / total_shares) * 100.0))
+                    elif (total_diffa + total_diffr) > 0:
+                        reject_ratio = min(100.0, max(0.0, (total_diffr / (total_diffa + total_diffr)) * 100.0))
+                    else:
+                        reject_ratio = 0.0
 
                     miner_fetch_success = True
                     self.consecutive_miner_failures = 0
@@ -480,6 +490,39 @@ class MonitorStateManager:
                                 send_telegram_async(msg)
                         elif miner_ok:
                             self.overheat_wrn_seconds = 0
+
+                    # 4. High Reject Ratio Telegram Alert (>10%) with Cooldown & Auto-Recovery
+                    now_time = time.time()
+                    total_shares = total_accepted + total_rejected
+                    if miner_ok and total_shares >= 10 and reject_ratio > 10.0:
+                        if (not self.high_reject_alerted) or (now_time - self.last_reject_alert_time >= self.reject_alert_cooldown):
+                            self.high_reject_alerted = True
+                            self.last_reject_alert_time = now_time
+                            msg = (
+                                f"⚠️ <b>[AntMinerTab-Web 矿池高拒绝率告警]</b>\n\n"
+                                f"<b>设备</b>: Antminer S19 Hydro ({self.miner_url})\n"
+                                f"<b>当前拒绝率</b>: <b>{reject_ratio:.2f}%</b> (告警阈值: 10.00%)\n"
+                                f"<b>有效份额 (Accepted)</b>: {total_accepted:,}\n"
+                                f"<b>拒绝份额 (Rejected)</b>: {total_rejected:,}\n"
+                                f"<b>总份额数 (Total)</b>: {total_shares:,}\n"
+                                f"<b>实时算力</b>: {rate_5s_ghs:,.1f} GH/s\n"
+                                f"<b>状态分析</b>: 矿机提交份额被矿池拒绝比例已超 10%，可能存在矿池网络延迟过高、Stratum连接抖动或硬件微错误，请检查网络！\n"
+                                f"<b>时间</b>: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                            )
+                            send_telegram_async(msg)
+                    elif miner_ok and self.high_reject_alerted and reject_ratio <= 5.0 and total_shares >= 15:
+                        self.high_reject_alerted = False
+                        recovery_msg = (
+                            f"✅ <b>[AntMinerTab-Web 矿池拒绝率恢复正常]</b>\n\n"
+                            f"<b>设备</b>: Antminer S19 Hydro ({self.miner_url})\n"
+                            f"<b>当前拒绝率</b>: <b>{reject_ratio:.2f}%</b>\n"
+                            f"<b>有效份额 (Accepted)</b>: {total_accepted:,}\n"
+                            f"<b>拒绝份额 (Rejected)</b>: {total_rejected:,}\n"
+                            f"<b>实时算力</b>: {rate_5s_ghs:,.1f} GH/s\n"
+                            f"<b>状态</b>: 矿机提交份额已稳定接收，拒绝率已恢复至正常水平。\n"
+                            f"<b>时间</b>: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                        )
+                        send_telegram_async(recovery_msg)
 
                     # Append to 1-Hour buffers
                     now_epoch = time.time()
@@ -1015,7 +1058,9 @@ HTML_PAGE = """<!DOCTYPE html>
     try {
       const res = await fetch("/api/status");
       if (res.status === 401) {
-        window.location.reload();
+        document.getElementById("statusBadge").className = "badge disconnected";
+        document.getElementById("statusBadge").innerText = "[ AUTH REQUIRED ]";
+        // Do not reload in a loop; pause polling until page is reloaded or authenticated
         return;
       }
       const data = await res.json();
@@ -1580,33 +1625,52 @@ HTML_PAGE = """<!DOCTYPE html>
 """
 
 
-CONFIG_DEFAULT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+def get_config_path(custom_path: Optional[str] = None) -> str:
+    """Find config.json path from custom arg, CWD, or script directory."""
+    if custom_path and os.path.exists(custom_path):
+        return os.path.abspath(custom_path)
+    
+    # 1. Check current working directory
+    cwd_cfg = os.path.abspath("config.json")
+    if os.path.exists(cwd_cfg):
+        return cwd_cfg
+
+    # 2. Check script directory
+    script_dir_cfg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    if os.path.exists(script_dir_cfg):
+        return script_dir_cfg
+
+    # 3. Default fallback to script directory path
+    return script_dir_cfg
 
 
-def load_config(config_path: str = CONFIG_DEFAULT_PATH) -> Dict[str, str]:
+def load_config(config_path: Optional[str] = None) -> Dict[str, str]:
     """Load or create config.json for login_password and power_password."""
+    resolved_path = get_config_path(config_path)
     default_config = {
         "login_password": "antminer",
         "power_password": "dl.general"
     }
-    if not os.path.exists(config_path):
+
+    if not os.path.exists(resolved_path):
         try:
-            with open(config_path, "w", encoding="utf-8") as f:
+            with open(resolved_path, "w", encoding="utf-8") as f:
                 json.dump(default_config, f, indent=2, ensure_ascii=False)
                 f.write("\n")
         except Exception as e:
-            sys.stderr.write(f"[Config Warning] Failed to create {config_path}: {e}\n")
+            sys.stderr.write(f"[Config Warning] Failed to create {resolved_path}: {e}\n")
         return default_config
 
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
+        with open(resolved_path, "r", encoding="utf-8") as f:
             cfg = json.load(f)
             return {
                 "login_password": str(cfg.get("login_password", default_config["login_password"])),
                 "power_password": str(cfg.get("power_password", default_config["power_password"])),
+                "_path": resolved_path,
             }
     except Exception as e:
-        sys.stderr.write(f"[Config Warning] Failed to parse {config_path}: {e}. Using defaults.\n")
+        sys.stderr.write(f"[Config Warning] Failed to parse {resolved_path}: {e}. Using defaults.\n")
         return default_config
 
 
@@ -1616,26 +1680,57 @@ class AntMinerWebHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
+    def get_login_password(self) -> str:
+        """Dynamically get the latest login password from server or reloaded config."""
+        config_path = getattr(self.server, "config_path", None)
+        if config_path and os.path.exists(config_path):
+            try:
+                cfg = load_config(config_path)
+                return str(cfg.get("login_password", getattr(self.server, "login_password", "antminer"))).strip()
+            except Exception:
+                pass
+        return str(getattr(self.server, "login_password", "antminer")).strip()
+
+    def get_power_password(self) -> str:
+        """Dynamically get the latest power password from server or reloaded config."""
+        config_path = getattr(self.server, "config_path", None)
+        if config_path and os.path.exists(config_path):
+            try:
+                cfg = load_config(config_path)
+                return str(cfg.get("power_password", getattr(self.server, "power_password", "dl.general"))).strip()
+            except Exception:
+                pass
+        return str(getattr(self.server, "power_password", "dl.general")).strip()
+
     def check_basic_auth(self) -> bool:
         """Verify HTTP Authentication: Password only, username is not required."""
         if not getattr(self.server, "auth_enabled", True):
             return True
 
         auth_header = self.headers.get("Authorization")
-        if not auth_header or not auth_header.startswith("Basic "):
+        if not auth_header:
+            self.send_auth_challenge()
+            return False
+
+        auth_parts = auth_header.strip().split(None, 1)
+        if len(auth_parts) != 2 or auth_parts[0].lower() != "basic":
             self.send_auth_challenge()
             return False
 
         try:
-            encoded_creds = auth_header[6:].strip()
-            decoded = base64.b64decode(encoded_creds).decode("utf-8", errors="ignore")
+            encoded_creds = auth_parts[1].strip()
+            decoded = base64.b64decode(encoded_creds).decode("utf-8", errors="ignore").strip()
             if ":" in decoded:
-                _, password = decoded.split(":", 1)
+                user, password = decoded.split(":", 1)
             else:
-                password = decoded
+                user, password = "", decoded
 
-            expected_pass = getattr(self.server, "login_password", "antminer")
-            if hmac.compare_digest(password, expected_pass):
+            user = user.strip()
+            password = password.strip()
+            expected_pass = self.get_login_password()
+
+            # 宽容匹配：用户输入在密码框、或输入在用户名框、或两处都输入，均视为有效！
+            if hmac.compare_digest(password, expected_pass) or hmac.compare_digest(user, expected_pass):
                 return True
         except Exception:
             pass
@@ -1644,9 +1739,9 @@ class AntMinerWebHandler(BaseHTTPRequestHandler):
         return False
 
     def send_auth_challenge(self):
-        """Send 401 Unauthorized response with WWW-Authenticate header."""
+        """Send 401 Unauthorized response with standard WWW-Authenticate header."""
         self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="AntMinerTab Dashboard (Password Only)", charset="UTF-8"')
+        self.send_header("WWW-Authenticate", 'Basic realm="AntMinerTab"')
         if self.path.startswith("/api/"):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -1724,7 +1819,7 @@ class AntMinerWebHandler(BaseHTTPRequestHandler):
             state = req_data.get("state", False)
             pwd = str(req_data.get("password", ""))
             if state:
-                expected_power_pwd = str(getattr(self.server, "power_password", "dl.general"))
+                expected_power_pwd = self.get_power_password()
                 if not hmac.compare_digest(pwd, expected_power_pwd):
                     self.send_response(403)
                     self.send_header("Content-Type", "application/json")
@@ -1772,12 +1867,13 @@ def main():
     parser = argparse.ArgumentParser(description="AntMinerTab Web Server Edition (Port 20000)")
     parser.add_argument("--host", default=os.getenv("ANTMINER_HOST", "0.0.0.0"), help="Host address to bind (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=int(os.getenv("ANTMINER_PORT", "20000")), help="Port to listen on (default: 20000)")
-    parser.add_argument("--config", default=CONFIG_DEFAULT_PATH, help=f"Path to configuration file (default: {CONFIG_DEFAULT_PATH})")
+    parser.add_argument("--config", default=None, help="Path to config.json (default: search ./config.json or script directory)")
 
     args = parser.parse_args()
 
     # Load configuration from local config file
     config = load_config(args.config)
+    resolved_config_path = config.get("_path", get_config_path(args.config))
     login_password = config["login_password"]
     power_password = config["power_password"]
 
@@ -1787,9 +1883,10 @@ def main():
     print(f" Target Plug:  10.8.1.110 (Mijia Smart Plug 3)")
     print(f" Telegram Bot: @s332854BOT (7775553661)")
     print("=" * 72)
-    print(f" Config File:   {os.path.basename(args.config)} (Loaded)")
-    print(f" Web Security:  Password Protection ENABLED (Default)")
-    print(f" Auth Mode:     Password Only (Username is ignored / not required)")
+    print(f" Config File:   {resolved_config_path}")
+    print(f" Web Password:  [{login_password}] (动态读取/热更新)")
+    print(f" Power Auth:    [{power_password}] (动态读取/热更新)")
+    print(f" Auth Mode:     Password Only (用户名无需填写)")
     print("=" * 72)
     print(f" Local Access:     http://127.0.0.1:{args.port}")
     print(f" Tailscale Access: http://<tailscale-ip>:{args.port}")
@@ -1801,6 +1898,7 @@ def main():
     server = ThreadingHTTPServer((args.host, args.port), AntMinerWebHandler)
     server.state_manager = state_mgr
     server.auth_enabled = True
+    server.config_path = resolved_config_path
     server.login_password = login_password
     server.power_password = power_password
 

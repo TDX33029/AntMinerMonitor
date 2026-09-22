@@ -299,6 +299,11 @@ class AntminerMonitor:
         self.overheat_wrn_seconds = 0
         self.cutoff_triggered = False
 
+        # Reject Ratio Alarm State
+        self.high_reject_alerted = False
+        self.last_reject_alert_time = 0.0
+        self.reject_alert_cooldown = 300.0  # Cooldown 5 minutes between alerts
+
         # History queues for sparklines
         self.history_hashrate: Deque[float] = deque(maxlen=self.history_len)
         self.history_inlet: Deque[float] = deque(maxlen=self.history_len)
@@ -349,8 +354,13 @@ class AntminerMonitor:
                 total_diffa += float(p.get("diffa", 0.0))
                 total_diffr += float(p.get("diffr", 0.0))
 
-            total_diff = total_diffa + total_diffr
-            reject_ratio = (total_diffr / total_diff * 100.0) if total_diff > 0 else 0.0
+            total_shares = total_accepted + total_rejected
+            if total_shares > 0:
+                reject_ratio = min(100.0, max(0.0, (total_rejected / total_shares) * 100.0))
+            elif (total_diffa + total_diffr) > 0:
+                reject_ratio = min(100.0, max(0.0, (total_diffr / (total_diffa + total_diffr)) * 100.0))
+            else:
+                reject_ratio = 0.0
 
             miner_fetch_success = True
             self.consecutive_miner_failures = 0
@@ -409,7 +419,9 @@ class AntminerMonitor:
             self.history_chip_max.append(chip_max)
 
         # Protection evaluation
-        self._evaluate_protection(chip_max, chip_avg, inlet_t, outlet_t, delta_t, plug_data, miner_ok=miner_ok)
+        self._evaluate_protection(chip_max, chip_avg, inlet_t, outlet_t, delta_t, plug_data, miner_ok=miner_ok,
+                                  reject_ratio=reject_ratio, total_accepted=total_accepted, total_rejected=total_rejected,
+                                  rate_5s_ghs=rate_5s_ghs)
 
         return {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -437,8 +449,9 @@ class AntminerMonitor:
             }
         }
 
-    def _evaluate_protection(self, chip_max: float, chip_avg: float, tin: float, tout: float, dt: float, plug_data: dict, miner_ok: bool = True):
-        """Dual threshold overheat cutoff logic."""
+    def _evaluate_protection(self, chip_max: float, chip_avg: float, tin: float, tout: float, dt: float, plug_data: dict, miner_ok: bool = True,
+                             reject_ratio: float = 0.0, total_accepted: int = 0, total_rejected: int = 0, rate_5s_ghs: float = 0.0):
+        """Dual threshold overheat cutoff logic and reject ratio alert."""
         if self.cutoff_triggered:
             # Enforce off
             if plug_data.get("switch_on", False):
@@ -478,9 +491,42 @@ class AntminerMonitor:
                     f"<b>保护机制</b>: 保护锁已激活，<b>绝不自动恢复</b>！\n"
                     f"<b>时间</b>: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
                 )
-                send_telegram_async(alert_msg)
+                send_telegram_async(msg)
         elif miner_ok:
             self.overheat_wrn_seconds = 0
+
+        # Reject ratio telegram alert (>10%) with cooldown and recovery
+        now_time = time.time()
+        total_shares = total_accepted + total_rejected
+        if miner_ok and total_shares >= 10 and reject_ratio > 10.0:
+            if (not self.high_reject_alerted) or (now_time - self.last_reject_alert_time >= self.reject_alert_cooldown):
+                self.high_reject_alerted = True
+                self.last_reject_alert_time = now_time
+                msg = (
+                    f"⚠️ <b>[AntMinerTab-CLI 矿池高拒绝率告警]</b>\n\n"
+                    f"<b>设备</b>: Antminer S19 Hydro ({self.base_url})\n"
+                    f"<b>当前拒绝率</b>: <b>{reject_ratio:.2f}%</b> (告警阈值: 10.00%)\n"
+                    f"<b>有效份额 (Accepted)</b>: {total_accepted:,}\n"
+                    f"<b>拒绝份额 (Rejected)</b>: {total_rejected:,}\n"
+                    f"<b>总份额数 (Total)</b>: {total_shares:,}\n"
+                    f"<b>实时算力</b>: {rate_5s_ghs:,.1f} GH/s\n"
+                    f"<b>状态分析</b>: 矿机提交份额被矿池拒绝比例已超 10%，请排查矿池连接延迟与算力板状态！\n"
+                    f"<b>时间</b>: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+                send_telegram_async(msg)
+        elif miner_ok and self.high_reject_alerted and reject_ratio <= 5.0 and total_shares >= 15:
+            self.high_reject_alerted = False
+            recovery_msg = (
+                f"✅ <b>[AntMinerTab-CLI 矿池拒绝率恢复正常]</b>\n\n"
+                f"<b>设备</b>: Antminer S19 Hydro ({self.base_url})\n"
+                f"<b>当前拒绝率</b>: <b>{reject_ratio:.2f}%</b>\n"
+                f"<b>有效份额 (Accepted)</b>: {total_accepted:,}\n"
+                f"<b>拒绝份额 (Rejected)</b>: {total_rejected:,}\n"
+                f"<b>实时算力</b>: {rate_5s_ghs:,.1f} GH/s\n"
+                f"<b>状态</b>: 矿机提交份额已稳定接收，拒绝率已恢复至正常水平。\n"
+                f"<b>时间</b>: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            )
+            send_telegram_async(recovery_msg)
 
     def print_dashboard(self, data: Dict[str, Any], watch_mode: bool = False):
         """Render a clean, minimalist terminal dashboard."""

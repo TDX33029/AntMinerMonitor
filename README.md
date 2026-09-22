@@ -54,6 +54,10 @@ python antminer_web.py
 # 默认直接运行即可，自动读取当前目录下的 config.json 配置文件：
 # - 登录网页密码：默认为 antminer（无需输入用户名）
 # - 通电操作密码：默认为 dl.general
+
+# 3. 一键停止所有旧进程与释放 20000 端口
+./stop.sh       # Linux / Ubuntu
+stop.bat        # Windows
 ```
 
 ### 配置文件 `config.json` 说明

@@ -88,6 +88,20 @@ python3 antminer_monitor.py --watch --wrn-temp 74.0 --stop-temp 77.0
 python3 antminer_web.py
 ```
 
+---
+
+### 一键停止所有旧进程与释放端口
+如果更换代码、更新配置或需要彻底终止所有后台服务：
+
+```bash
+chmod +x stop.sh
+./stop.sh
+# 或在需要权限时：sudo ./stop.sh
+```
+该脚本会自动停止 systemd 服务（如已注册）、终止所有相关 Python 进程（`antminer_web.py`、`antminer_monitor.py`、`antminer_gui.py`），并强制释放 `20000` 端口。
+
+---
+
 * **配置文件 `config.json`**：
   服务端在当前目录下维护 `config.json`，集中管理两层密码：
   ```json
