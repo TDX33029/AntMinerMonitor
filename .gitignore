@@ -1,0 +1,10 @@
+# WebMonitor local runtime configuration & passwords
+WebMonitor/config.json
+**/WebMonitor/config.json
+WebMonitor/config.*.json
+!WebMonitor/config.example.json
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class

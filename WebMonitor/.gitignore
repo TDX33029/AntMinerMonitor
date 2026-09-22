@@ -1,0 +1,8 @@
+# Exclude local passwords and sensitive runtime configuration
+config.json
+config.*.json
+!config.example.json
+
+# Python caches
+__pycache__/
+*.py[cod]
